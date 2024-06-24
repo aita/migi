@@ -16,6 +16,7 @@ pub struct Options {
     pub dialect: Dialect,
     pub database: String,
     pub default_schema: String,
+    pub paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -45,6 +46,7 @@ impl Config {
             dialect,
             database: self.database.clone(),
             default_schema,
+            paths: self.paths.clone(),
         })
     }
 }

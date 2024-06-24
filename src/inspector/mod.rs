@@ -1,8 +1,9 @@
 use anyhow::Result;
-use sqlparser::ast::{ObjectName, Statement};
+use sqlparser::ast::{ColumnDef, ObjectName, Statement};
 use sqlparser::dialect::{self, MySqlDialect, PostgreSqlDialect, SQLiteDialect};
+use sqlparser::keywords::Keyword;
 use sqlparser::parser::Parser;
-use sqlparser::tokenizer::{Location, Token, Tokenizer};
+use sqlparser::tokenizer::{Location, Token, TokenWithLocation, Tokenizer};
 
 use crate::dbinfo::{Column, Dbinfo, Table, TableName};
 use crate::Dialect;
@@ -28,12 +29,40 @@ impl<'a> Inspector<'a> {
             Dialect::MySql => Box::new(MySqlDialect {}),
             Dialect::SQLite => Box::new(SQLiteDialect {}),
         };
+        let quote_style = match self.dbinfo.dialect {
+            Dialect::PostgreSql => Some('"'),
+            Dialect::MySql => Some('`'),
+            Dialect::SQLite => Some('`'),
+        };
 
         let tokens = Tokenizer::new(&*dialect, sql).tokenize_with_location()?;
+
+        // FIXME: This is a dirty hack to quote all words that are not keywords.
+        let tokens = tokens
+            .into_iter()
+            .map(|tok| match tok.token {
+                Token::Word(ref w) => {
+                    if w.keyword == Keyword::NoKeyword {
+                        let mut w = w.clone();
+                        w.quote_style = quote_style;
+                        TokenWithLocation {
+                            token: Token::Word(w),
+                            location: tok.location,
+                        }
+                    } else {
+                        tok
+                    }
+                }
+                _ => tok,
+            })
+            .collect();
 
         let mut parser = Parser::new(&*dialect).with_tokens_with_locations(tokens);
 
         loop {
+            // ignore empty statements
+            while parser.consume_token(&Token::SemiColon) {}
+
             let tok = parser.peek_token();
             if tok.token == Token::EOF {
                 break;
@@ -163,7 +192,10 @@ impl<'a> Inspector<'a> {
 
                 let table_name = self.inspect_table_name(name, loc)?;
 
-                let columns = self.inspect_columns(columns, loc)?;
+                let columns = columns
+                    .into_iter()
+                    .map(|col| self.inspect_column(col, loc))
+                    .collect::<Result<Vec<Column>>>()?;
 
                 if like.is_some() {
                     anyhow::bail!(
@@ -173,7 +205,7 @@ impl<'a> Inspector<'a> {
                 }
 
                 let table = Table {
-                    name: table_name.table.clone(),
+                    name: table_name.table.value.clone(),
                     columns,
                     constraints,
                     with_options,
@@ -199,16 +231,18 @@ impl<'a> Inspector<'a> {
                 columns,
                 unique,
                 concurrently,
-                if_not_exists,
+                // if_not_exists,
                 include,
                 nulls_distinct,
                 predicate,
+                ..
             } => {
                 todo!()
             }
             Statement::CreateSchema {
                 schema_name,
-                if_not_exists,
+                // if_not_exists,
+                ..
             } => {
                 todo!()
             }
@@ -216,64 +250,28 @@ impl<'a> Inspector<'a> {
                 db_name,
                 location,
                 managed_location,
-                if_not_exists,
+                // if_not_exists,
+                ..
             } => {
                 todo!()
             }
             Statement::AlterTable {
                 name,
-                if_exists,
+                // if_exists,
                 only,
                 operations,
-                // location,
+                location,
                 ..
-            } => {
-                todo!()
-            }
-            Statement::AlterIndex { name, operation } => {
-                todo!()
-            }
-            Statement::AlterView {
-                name,
-                columns,
-                query,
-                with_options,
             } => {
                 todo!()
             }
             Statement::CreateExtension {
                 name,
-                if_not_exists,
+                // if_not_exists,
                 cascade,
                 schema,
                 version,
-            } => {
-                todo!()
-            }
-            Statement::CreateFunction {
-                or_replace,
-                temporary,
-                if_not_exists,
-                name,
-                args,
-                return_type,
-                function_body,
-                behavior,
-                called_on_null,
-                parallel,
-                using,
-                language,
-                determinism_specifier,
-                options,
-                remote_connection,
-            } => {
-                todo!()
-            }
-            Statement::CreateProcedure {
-                or_alter,
-                name,
-                params,
-                body,
+                ..
             } => {
                 todo!()
             }
@@ -289,18 +287,18 @@ impl<'a> Inspector<'a> {
             1 => Ok(TableName {
                 catalog: None,
                 schema: None,
-                table: name.0[0].value.clone(),
+                table: name.0[0].clone(),
             }),
             2 => match self.dbinfo.dialect {
                 Dialect::PostgreSql => Ok(TableName {
                     catalog: None,
-                    schema: Some(name.0[0].value.clone()),
-                    table: name.0[1].value.clone(),
+                    schema: Some(name.0[0].clone()),
+                    table: name.0[1].clone(),
                 }),
                 Dialect::MySql => Ok(TableName {
-                    catalog: Some(name.0[0].value.clone()),
+                    catalog: Some(name.0[0].clone()),
                     schema: None,
-                    table: name.0[1].value.clone(),
+                    table: name.0[1].clone(),
                 }),
                 Dialect::SQLite => {
                     anyhow::bail!("{} invalid table name: {:?}", self.location(loc), name)
@@ -308,9 +306,9 @@ impl<'a> Inspector<'a> {
             },
             3 => match self.dbinfo.dialect {
                 Dialect::PostgreSql => Ok(TableName {
-                    catalog: Some(name.0[0].value.clone()),
-                    schema: Some(name.0[1].value.clone()),
-                    table: name.0[2].value.clone(),
+                    catalog: Some(name.0[0].clone()),
+                    schema: Some(name.0[1].clone()),
+                    table: name.0[2].clone(),
                 }),
                 Dialect::MySql => {
                     anyhow::bail!("{} invalid table name: {:?}", self.location(loc), name)
@@ -323,11 +321,53 @@ impl<'a> Inspector<'a> {
         }
     }
 
-    fn inspect_columns(
-        &self,
-        columns: Vec<sqlparser::ast::ColumnDef>,
-        loc: Location,
-    ) -> Result<Vec<Column>> {
-        todo!()
+    fn inspect_column(&self, column: ColumnDef, _loc: Location) -> Result<Column> {
+        let column = Column {
+            name: column.name.value,
+            data_type: column.data_type,
+            collation: column.collation,
+            options: column.options,
+        };
+        Ok(column)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use sqlparser::ast::Ident;
+
+    use crate::Options;
+
+    use super::*;
+
+    #[test]
+    fn test_create_table() {
+        let sql = r#"
+            CREATE TABLE t (
+                id INT PRIMARY KEY,
+                name TEXT NOT NULL
+            );
+        "#;
+
+        let options = Options {
+            dialect: Dialect::PostgreSql,
+            database: "test".to_string(),
+            default_schema: "public".to_string(),
+            paths: vec![],
+        };
+        let mut dbinfo = Dbinfo::with_options(options);
+        let mut inspector = Inspector::new(&mut dbinfo);
+        inspector.inspect(sql, "test.sql").unwrap();
+
+        let table = dbinfo
+            .get_table(&TableName {
+                catalog: None,
+                schema: None,
+                table: Ident::new("t".to_string()),
+            })
+            .unwrap();
+        assert_eq!(table.columns.len(), 2);
+        assert_eq!(table.columns[0].name, "id");
+        assert_eq!(table.columns[1].name, "name");
     }
 }

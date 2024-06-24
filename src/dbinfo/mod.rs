@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
+use anyhow::Result;
 use sqlparser::ast::{
-    ColumnOptionDef, DataType, Expr, Ident, ObjectName, OnCommit, SqlOption, TableConstraint,
+    ColumnOptionDef, DataType, Expr, Ident, ObjectName, OnCommit, Query, SqlOption, TableConstraint,
 };
 
 use crate::{Dialect, Options};
@@ -31,7 +32,11 @@ impl Dbinfo {
         }
     }
 
-    pub fn default_catalog(&mut self) -> &mut Catalog {
+    fn default_catalog(&self) -> &Catalog {
+        self.catalogs.get(&self.default_catalog).unwrap()
+    }
+
+    fn default_catalog_mut(&mut self) -> &mut Catalog {
         self.catalogs.get_mut(&self.default_catalog).unwrap()
     }
 
@@ -39,8 +44,50 @@ impl Dbinfo {
         self.catalogs.insert(name.into(), catalog);
     }
 
-    pub fn add_table(&mut self, name: &TableName, table: Table) {
-        todo!()
+    pub fn add_table(&mut self, name: &TableName, table: Table) -> Result<()> {
+        let catalog = if let Some(ref catalog_name) = name.catalog {
+            self.get_catalog_mut(catalog_name.value.as_str())?
+        } else {
+            self.default_catalog_mut()
+        };
+
+        let schema = if let Some(ref schema_name) = name.schema {
+            catalog.get_schema_mut(schema_name.value.as_str())?
+        } else {
+            catalog.default_schema_mut()
+        };
+
+        schema.add_table(&name.table.value, table);
+
+        Ok(())
+    }
+
+    pub fn get_catalog(&self, name: &str) -> Result<&Catalog> {
+        self.catalogs
+            .get(name)
+            .ok_or(anyhow::anyhow!("catalog does not found"))
+    }
+
+    pub fn get_catalog_mut(&mut self, name: &str) -> Result<&mut Catalog> {
+        self.catalogs
+            .get_mut(name)
+            .ok_or(anyhow::anyhow!("catalog does not found"))
+    }
+
+    pub fn get_table(&self, name: &TableName) -> Result<&Table> {
+        let catalog = if let Some(ref catalog_name) = name.catalog {
+            self.get_catalog(catalog_name.value.as_str())?
+        } else {
+            self.default_catalog()
+        };
+
+        let schema = if let Some(ref schema_name) = name.schema {
+            catalog.get_schema(schema_name.value.as_str())?
+        } else {
+            catalog.default_schema()
+        };
+
+        schema.get_table(name.table.value.as_str())
     }
 }
 
@@ -52,8 +99,28 @@ pub struct Catalog {
 }
 
 impl Catalog {
-    pub fn add_schema(&mut self, name: &str, schema: Schema) {
+    fn default_schema(&self) -> &Schema {
+        self.schemas.get(&self.default_schema).unwrap()
+    }
+
+    fn default_schema_mut(&mut self) -> &mut Schema {
+        self.schemas.get_mut(&self.default_schema).unwrap()
+    }
+
+    fn add_schema(&mut self, name: &str, schema: Schema) {
         self.schemas.insert(name.into(), schema);
+    }
+
+    pub fn get_schema(&self, name: &str) -> Result<&Schema> {
+        self.schemas
+            .get(name)
+            .ok_or(anyhow::anyhow!("schema does not found"))
+    }
+
+    pub fn get_schema_mut(&mut self, name: &str) -> Result<&mut Schema> {
+        self.schemas
+            .get_mut(name)
+            .ok_or(anyhow::anyhow!("schema does not found"))
     }
 }
 
@@ -64,8 +131,20 @@ pub struct Schema {
 }
 
 impl Schema {
-    pub fn add_table(&mut self, name: &str, table: Table) {
+    fn add_table(&mut self, name: &str, table: Table) {
         self.tables.insert(name.into(), table);
+    }
+
+    pub fn get_table(&self, name: &str) -> Result<&Table> {
+        self.tables
+            .get(name)
+            .ok_or(anyhow::anyhow!("table does not found"))
+    }
+
+    pub fn get_table_mut(&mut self, name: &str) -> Result<&mut Table> {
+        self.tables
+            .get_mut(name)
+            .ok_or(anyhow::anyhow!("table does not found"))
     }
 }
 
@@ -98,7 +177,22 @@ pub struct Column {
 
 #[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
 pub struct TableName {
-    pub catalog: Option<String>,
-    pub schema: Option<String>,
-    pub table: String,
+    pub catalog: Option<Ident>,
+    pub schema: Option<Ident>,
+    pub table: Ident,
+}
+
+pub struct View {
+    pub name: String,
+    pub materialized: bool,
+    pub columns: Vec<ViewColumn>,
+    pub query: Box<Query>,
+    pub comment: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
+pub struct ViewColumn {
+    pub name: String,
+    pub data_type: Option<DataType>,
+    pub options: Vec<SqlOption>,
 }
