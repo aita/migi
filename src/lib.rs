@@ -3,6 +3,7 @@ use serde_derive::{Deserialize, Serialize};
 
 pub mod dbinfo;
 pub mod inspector;
+pub mod migrate;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Dialect {

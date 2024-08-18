@@ -7,6 +7,7 @@ edition = "2021"
 anyhow = "1.0.86"
 clap = { version = "4.5.7", features = ["derive"] }
 config = "0.14.0"
+diff = "0.1.13"
 serde = "1.0.203"
 serde_derive = "1.0.203"
 sqlparser = { version = "0.47.0" }
